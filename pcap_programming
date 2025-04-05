@@ -1,0 +1,101 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <pcap.h>
+#include <arpa/inet.h>
+#include <ctype.h>
+#include "myheader.h"
+
+void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
+    struct ethheader *eth = (struct ethheader *)packet;
+
+    if (ntohs(eth->ether_type) == 0x0800) { // IP packet
+        struct ipheader *ip = (struct ipheader *)(packet + sizeof(struct ethheader));
+
+        if (ip->iph_protocol == IPPROTO_TCP) { // TCP packet
+            int ip_len = ip->iph_ihl * 4;
+            struct tcpheader *tcp = (struct tcpheader *)(packet + sizeof(struct ethheader) + ip_len);
+            int tcp_len = TH_OFF(tcp) * 4;
+
+            const u_char *payload = packet + sizeof(struct ethheader) + ip_len + tcp_len;
+            int payload_len = header->caplen - (payload - packet);
+
+            // Print Ethernet Header
+            printf("===== Ethernet Header =====\n");
+            printf("Src MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+                   eth->ether_shost[0], eth->ether_shost[1], eth->ether_shost[2],
+                   eth->ether_shost[3], eth->ether_shost[4], eth->ether_shost[5]);
+            printf("Dst MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+                   eth->ether_dhost[0], eth->ether_dhost[1], eth->ether_dhost[2],
+                   eth->ether_dhost[3], eth->ether_dhost[4], eth->ether_dhost[5]);
+
+            // Print IP Header
+            printf("===== IP Header =====\n");
+            printf("Src IP: %s\n", inet_ntoa(ip->iph_sourceip));
+            printf("Dst IP: %s\n", inet_ntoa(ip->iph_destip));
+
+            // Print TCP Header
+            printf("===== TCP Header =====\n");
+            printf("Src Port: %d\n", ntohs(tcp->tcp_sport));
+            printf("Dst Port: %d\n", ntohs(tcp->tcp_dport));
+
+            // Print Message
+            printf("===== Payload =====\n");
+            if (payload_len > 0) {
+                int limit = (payload_len > 32) ? 32 : payload_len;
+                for (int i = 0; i < limit; i++) {
+                    if (isprint(payload[i]))
+                        printf("%c", payload[i]);
+                    else
+                        printf(".");
+                }
+                printf("\n");
+            } else {
+                printf("No TCP payload.\n");
+            }
+
+            printf("============================\n\n");
+        }
+    }
+}
+
+int main() {
+    pcap_t *handle;
+    char errbuf[PCAP_ERRBUF_SIZE];
+    struct bpf_program fp;
+    char filter_exp[] = "tcp";
+    bpf_u_int32 net;
+    pcap_if_t *alldevs, *dev;
+
+    // Get device list
+    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
+        printf("Error finding devices: %s\n", errbuf);
+        return 1;
+    }
+
+    dev = alldevs;
+    if (dev == NULL) {
+        printf("No devices found.\n");
+        return 2;
+    }
+
+    printf("Using device: %s\n", dev->name);
+
+    handle = pcap_open_live(dev->name, BUFSIZ, 1, 1000, errbuf);
+    if (handle == NULL) {
+        printf("Error opening device %s: %s\n", dev->name, errbuf);
+        return 3;
+    }
+
+    if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1 || pcap_setfilter(handle, &fp) == -1) {
+        printf("Error setting filter: %s\n", pcap_geterr(handle));
+        return 4;
+    }
+
+    // Capture 10 packets
+    pcap_loop(handle, 10, got_packet, NULL);
+
+    pcap_freealldevs(alldevs);
+    pcap_close(handle);
+
+    return 0;
+}
